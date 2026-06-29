@@ -9,6 +9,7 @@ interface ActionButtonProps {
   disabled?: boolean;
   fullWidth?: boolean;
   size?: "sm" | "md" | "lg";
+  type?: "button" | "submit";
 }
 
 const variants = {
@@ -35,10 +36,11 @@ export function ActionButton({
   disabled,
   fullWidth,
   size = "md",
+  type = "button",
 }: ActionButtonProps) {
   return (
     <button
-      type="button"
+      type={type}
       onClick={onClick}
       disabled={disabled || loading}
       className={`rounded-xl transition-all active:scale-[0.98] disabled:opacity-50 ${variants[variant]} ${sizes[size]} ${fullWidth ? "w-full" : ""}`}

@@ -1,18 +1,22 @@
+import { redirect } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { Header } from "@/components/Header";
 import { HomeActions } from "@/components/HomeActions";
-import { BARBER_NAME } from "@/lib/constants";
+import { getServerSession } from "@/lib/auth";
 import { getDashboardStats } from "@/lib/rules";
 
-export default function HomePage() {
-  const stats = getDashboardStats();
+export default async function HomePage() {
+  const session = await getServerSession();
+  if (!session?.barberId) redirect("/login");
+
+  const stats = getDashboardStats(session.barberId);
 
   return (
     <AppShell>
       <Header />
       <div className="px-4 py-4">
         <h2 className="text-2xl font-bold">
-          Ciao {BARBER_NAME}! 👋
+          Ciao {session.name}! 👋
         </h2>
         <p className="mt-1 text-sm text-flexi-gray">
           Ecco cosa puoi fare oggi per guadagnare di più.
@@ -27,7 +31,6 @@ export default function HomePage() {
         pendingRequests={stats.pendingRequests}
       />
 
-      {/* Quick action cards */}
       <div className="space-y-3 px-4 pb-4">
         <QuickCard
           emoji="💚"

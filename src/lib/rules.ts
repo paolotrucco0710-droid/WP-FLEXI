@@ -1,4 +1,4 @@
-import { differenceInDays, parseISO } from "date-fns";
+import { differenceInDays, parseISO, format, addDays } from "date-fns";
 import { getDb } from "./db";
 import { getToday } from "./format";
 import {
@@ -16,17 +16,22 @@ import type {
   WhatsAppMessage,
 } from "./types";
 
-export function getCustomersToRecover(): CustomerToRecover[] {
+export function getCustomersToRecover(barberId: number): CustomerToRecover[] {
   const db = getDb();
   const customers = db
-    .prepare("SELECT * FROM customers ORDER BY last_cut_date ASC")
-    .all() as Customer[];
+    .prepare(
+      "SELECT * FROM customers WHERE barber_id = ? ORDER BY last_cut_date ASC"
+    )
+    .all(barberId) as Customer[];
 
   const today = new Date();
   return customers
     .filter((c) => {
       if (!c.last_cut_date) return true;
-      return differenceInDays(today, parseISO(c.last_cut_date)) >= RECOVERY_DAYS_THRESHOLD;
+      return (
+        differenceInDays(today, parseISO(c.last_cut_date)) >=
+        RECOVERY_DAYS_THRESHOLD
+      );
     })
     .map((c) => ({
       ...c,
@@ -36,27 +41,44 @@ export function getCustomersToRecover(): CustomerToRecover[] {
     }));
 }
 
-export function getNoShowAtRisk(): Appointment[] {
+export function getNoShowAtRisk(barberId: number): Appointment[] {
   const db = getDb();
   const today = getToday();
   return db
     .prepare(
       `SELECT * FROM appointments 
-       WHERE date = ? AND status IN ('non_confermato', 'rischio_no_show')
+       WHERE barber_id = ? AND date = ? AND status IN ('non_confermato', 'rischio_no_show')
        ORDER BY time ASC`
     )
-    .all(today) as Appointment[];
+    .all(barberId, today) as Appointment[];
 }
 
-export function getTodayAppointments(): {
+export function getTomorrowAppointmentsForReminder(
+  barberId: number
+): Appointment[] {
+  const db = getDb();
+  const tomorrow = format(addDays(new Date(), 1), "yyyy-MM-dd");
+  return db
+    .prepare(
+      `SELECT * FROM appointments 
+       WHERE barber_id = ? AND date = ? 
+       AND status IN ('non_confermato', 'rischio_no_show')
+       ORDER BY time ASC`
+    )
+    .all(barberId, tomorrow) as Appointment[];
+}
+
+export function getTodayAppointments(barberId: number): {
   confirmed: Appointment[];
   unconfirmed: Appointment[];
 } {
   const db = getDb();
   const today = getToday();
   const all = db
-    .prepare("SELECT * FROM appointments WHERE date = ? ORDER BY time ASC")
-    .all(today) as Appointment[];
+    .prepare(
+      "SELECT * FROM appointments WHERE barber_id = ? AND date = ? ORDER BY time ASC"
+    )
+    .all(barberId, today) as Appointment[];
 
   return {
     confirmed: all.filter((a) => a.status === "confermato"),
@@ -66,54 +88,68 @@ export function getTodayAppointments(): {
   };
 }
 
-export function getEmptySlots(): EmptySlot[] {
+export function getEmptySlots(barberId: number): EmptySlot[] {
   const db = getDb();
   const today = getToday();
   return db
     .prepare(
-      "SELECT * FROM empty_slots WHERE date >= ? AND published = 0 ORDER BY date, start_time"
+      `SELECT * FROM empty_slots 
+       WHERE barber_id = ? AND date >= ? AND published = 0 
+       ORDER BY date, start_time`
     )
-    .all(today) as EmptySlot[];
+    .all(barberId, today) as EmptySlot[];
 }
 
-export function getPendingRequests(): AppointmentRequest[] {
+export function getPendingRequests(barberId: number): AppointmentRequest[] {
   const db = getDb();
   return db
     .prepare(
-      "SELECT * FROM appointment_requests WHERE status = 'da_gestire' ORDER BY requested_date, requested_time"
+      `SELECT * FROM appointment_requests 
+       WHERE barber_id = ? AND status = 'da_gestire' 
+       ORDER BY requested_date, requested_time`
     )
-    .all() as AppointmentRequest[];
+    .all(barberId) as AppointmentRequest[];
 }
 
-export function getManagedRequests(): AppointmentRequest[] {
+export function getManagedRequests(barberId: number): AppointmentRequest[] {
   const db = getDb();
   return db
     .prepare(
-      "SELECT * FROM appointment_requests WHERE status != 'da_gestire' ORDER BY created_at DESC LIMIT 20"
+      `SELECT * FROM appointment_requests 
+       WHERE barber_id = ? AND status != 'da_gestire' 
+       ORDER BY created_at DESC LIMIT 20`
     )
-    .all() as AppointmentRequest[];
+    .all(barberId) as AppointmentRequest[];
 }
 
-export function getDashboardStats(): DashboardStats {
-  const toRecover = getCustomersToRecover();
-  const noShow = getNoShowAtRisk();
-  const slots = getEmptySlots();
-  const { confirmed, unconfirmed } = getTodayAppointments();
-  const requests = getPendingRequests();
+export function getDashboardStats(barberId: number): DashboardStats {
+  const toRecover = getCustomersToRecover(barberId);
+  const noShow = getNoShowAtRisk(barberId);
+  const slots = getEmptySlots(barberId);
+  const { confirmed, unconfirmed } = getTodayAppointments(barberId);
+  const requests = getPendingRequests(barberId);
 
   const db = getDb();
   const monthly = db
-    .prepare("SELECT * FROM monthly_stats WHERE id = 1")
-    .get() as {
-    recovered_customers: number;
-    no_shows_avoided: number;
-    slots_filled: number;
+    .prepare("SELECT * FROM monthly_stats WHERE barber_id = ?")
+    .get(barberId) as
+    | {
+        recovered_customers: number;
+        no_shows_avoided: number;
+        slots_filled: number;
+      }
+    | undefined;
+
+  const stats = monthly ?? {
+    recovered_customers: 0,
+    no_shows_avoided: 0,
+    slots_filled: 0,
   };
 
   const totalEarned =
-    monthly.recovered_customers * EARNINGS.recovery +
-    monthly.no_shows_avoided * EARNINGS.noShowAvoided +
-    monthly.slots_filled * EARNINGS.slotFilled;
+    stats.recovered_customers * EARNINGS.recovery +
+    stats.no_shows_avoided * EARNINGS.noShowAvoided +
+    stats.slots_filled * EARNINGS.slotFilled;
 
   return {
     customersToRecover: toRecover.length,
@@ -122,49 +158,71 @@ export function getDashboardStats(): DashboardStats {
     confirmedToday: confirmed.length,
     unconfirmedToday: unconfirmed.length,
     pendingRequests: requests.length,
-    recoveredThisMonth: monthly.recovered_customers,
-    noShowsAvoidedThisMonth: monthly.no_shows_avoided,
-    slotsFilledThisMonth: monthly.slots_filled,
+    recoveredThisMonth: stats.recovered_customers,
+    noShowsAvoidedThisMonth: stats.no_shows_avoided,
+    slotsFilledThisMonth: stats.slots_filled,
     totalEarnedThisMonth: totalEarned,
   };
 }
 
-export function getCustomerById(id: string): Customer | null {
+export function getCustomerById(
+  barberId: number,
+  id: string
+): Customer | null {
   const db = getDb();
   return (
-    (db.prepare("SELECT * FROM customers WHERE id = ?").get(id) as Customer) ||
-    null
+    (db
+      .prepare("SELECT * FROM customers WHERE id = ? AND barber_id = ?")
+      .get(id, barberId) as Customer) || null
   );
 }
 
-export function getCustomerAppointments(customerId: string): Appointment[] {
+export function getCustomerAppointments(
+  barberId: number,
+  customerId: string
+): Appointment[] {
   const db = getDb();
   return db
     .prepare(
-      "SELECT * FROM appointments WHERE customer_id = ? ORDER BY date DESC, time DESC"
+      `SELECT * FROM appointments 
+       WHERE barber_id = ? AND customer_id = ? 
+       ORDER BY date DESC, time DESC`
     )
-    .all(customerId) as Appointment[];
+    .all(barberId, customerId) as Appointment[];
 }
 
-export function getCalendarDay(date: string): {
+export function getCalendarDay(
+  barberId: number,
+  date: string
+): {
   appointments: Appointment[];
   emptySlots: EmptySlot[];
 } {
   const db = getDb();
   const appointments = db
-    .prepare("SELECT * FROM appointments WHERE date = ? ORDER BY time ASC")
-    .all(date) as Appointment[];
+    .prepare(
+      `SELECT * FROM appointments WHERE barber_id = ? AND date = ? ORDER BY time ASC`
+    )
+    .all(barberId, date) as Appointment[];
   const emptySlots = db
-    .prepare("SELECT * FROM empty_slots WHERE date = ? ORDER BY start_time ASC")
-    .all(date) as EmptySlot[];
+    .prepare(
+      `SELECT * FROM empty_slots WHERE barber_id = ? AND date = ? ORDER BY start_time ASC`
+    )
+    .all(barberId, date) as EmptySlot[];
   return { appointments, emptySlots };
 }
 
-export function getRecentMessages(limit = 50): WhatsAppMessage[] {
+export function getRecentMessages(
+  barberId: number,
+  limit = 50
+): WhatsAppMessage[] {
   const db = getDb();
   return db
-    .prepare("SELECT * FROM whatsapp_messages ORDER BY created_at DESC LIMIT ?")
-    .all(limit) as WhatsAppMessage[];
+    .prepare(
+      `SELECT * FROM whatsapp_messages 
+       WHERE barber_id = ? ORDER BY created_at DESC LIMIT ?`
+    )
+    .all(barberId, limit) as WhatsAppMessage[];
 }
 
 export { WHATSAPP_TEMPLATES };

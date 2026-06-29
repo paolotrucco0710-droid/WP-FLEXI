@@ -1,10 +1,15 @@
+import { redirect } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { Header } from "@/components/Header";
 import { EARNINGS } from "@/lib/constants";
+import { getServerSession } from "@/lib/auth";
 import { getDashboardStats } from "@/lib/rules";
 
-export default function RisultatiPage() {
-  const stats = getDashboardStats();
+export default async function RisultatiPage() {
+  const session = await getServerSession();
+  if (!session?.barberId) redirect("/login");
+
+  const stats = getDashboardStats(session.barberId);
 
   const items = [
     {
@@ -75,7 +80,7 @@ export default function RisultatiPage() {
           <FlowArrow />
           <FlowStep step="2" text="Flexi invia messaggio WhatsApp" />
           <FlowArrow />
-          <FlowStep step="3" text="Cliente risponde" />
+          <FlowStep step="3" text="Cliente risponde SI" />
           <FlowArrow />
           <FlowStep step="4" text="Appuntamento prenotato" />
           <FlowArrow />

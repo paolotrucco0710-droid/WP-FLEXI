@@ -14,19 +14,30 @@ export type MessageType =
   | "richiesta_accettata"
   | "richiesta_rifiutata";
 
+export interface Barber {
+  id: number;
+  email: string;
+  name: string;
+  whatsapp_enabled: number;
+  created_at: string;
+}
+
 export interface Customer {
   id: string;
+  barber_id: number;
   name: string;
   phone: string;
   last_cut_date: string | null;
   total_cuts: number;
   notes: string | null;
   avatar_url: string | null;
+  recovery_sent_at: string | null;
   created_at: string;
 }
 
 export interface Appointment {
   id: string;
+  barber_id: number;
   customer_id: string;
   customer_name: string;
   date: string;
@@ -34,11 +45,13 @@ export interface Appointment {
   duration_minutes: number;
   status: AppointmentStatus;
   notes: string | null;
+  reminder_sent_at: string | null;
   created_at: string;
 }
 
 export interface EmptySlot {
   id: string;
+  barber_id: number;
   date: string;
   start_time: string;
   end_time: string;
@@ -49,6 +62,7 @@ export interface EmptySlot {
 
 export interface AppointmentRequest {
   id: string;
+  barber_id: number;
   customer_id: string;
   customer_name: string;
   customer_phone: string;
@@ -60,6 +74,7 @@ export interface AppointmentRequest {
 
 export interface WhatsAppMessage {
   id: string;
+  barber_id: number;
   customer_id: string | null;
   customer_name: string;
   phone: string;
@@ -84,4 +99,21 @@ export interface DashboardStats {
 
 export interface CustomerToRecover extends Customer {
   days_since_last_cut: number;
+}
+
+export interface ActionResult {
+  success: boolean;
+  failed: number;
+  sent: number;
+  simulated: number;
+  results: SendMessageResult[];
+}
+
+export interface SendMessageResult {
+  success: boolean;
+  messageId: string;
+  phone: string;
+  content: string;
+  status: "sent" | "simulated" | "failed";
+  mode: "simulated" | "live";
 }

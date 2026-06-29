@@ -1,16 +1,56 @@
 import Database from "better-sqlite3";
 import path from "path";
-import { seedDatabase } from "./seed";
+import fs from "fs";
+import { runMigrations } from "./migrate";
+import { seedDatabase, ensureDefaultBarber } from "./seed";
 
-const DB_PATH = path.join(process.cwd(), "flexi.db");
+function resolveDbPath(): string {
+  if (process.env.FLEXI_DB_PATH) {
+    return process.env.FLEXI_DB_PATH;
+  }
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    return path.join("/tmp", "flexi.db");
+  }
+  return path.join(process.cwd(), "flexi.db");
+}
+
+const DB_PATH = resolveDbPath();
 
 let db: Database.Database | null = null;
+let dbWritable: boolean | null = null;
+
+export function isDbWritable(): boolean {
+  if (dbWritable !== null) return dbWritable;
+  try {
+    const dir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.accessSync(dir, fs.constants.W_OK);
+    dbWritable = true;
+  } catch {
+    dbWritable = false;
+  }
+  return dbWritable;
+}
+
+export function getDbPath(): string {
+  return DB_PATH;
+}
 
 export function getDb(): Database.Database {
+  if (!isDbWritable()) {
+    throw new Error(
+      "Database non scrivibile. Imposta FLEXI_DB_PATH su directory persistente."
+    );
+  }
+
   if (!db) {
     db = new Database(DB_PATH);
     db.pragma("journal_mode = WAL");
     initSchema(db);
+    runMigrations(db);
+    ensureDefaultBarber(db);
     seedDatabase(db);
   }
   return db;

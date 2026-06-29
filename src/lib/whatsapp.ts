@@ -1,26 +1,22 @@
 import { v4 as uuid } from "uuid";
 import { getDb } from "./db";
 import { WHATSAPP_TEMPLATES } from "./constants";
-import type { MessageType } from "./types";
+import type { MessageType, SendMessageResult } from "./types";
 
-export interface SendResult {
-  success: boolean;
-  messageId: string;
-  phone: string;
-  content: string;
-  mode: "simulated" | "live";
+export function isWhatsAppLive(): boolean {
+  return !!(
+    process.env.WHATSAPP_API_URL &&
+    process.env.WHATSAPP_API_TOKEN &&
+    process.env.WHATSAPP_PHONE_ID
+  );
 }
 
 const WHATSAPP_API_URL = process.env.WHATSAPP_API_URL;
 const WHATSAPP_API_TOKEN = process.env.WHATSAPP_API_TOKEN;
 const WHATSAPP_PHONE_ID = process.env.WHATSAPP_PHONE_ID;
 
-function isLiveMode(): boolean {
-  return !!(WHATSAPP_API_URL && WHATSAPP_API_TOKEN && WHATSAPP_PHONE_ID);
-}
-
 async function sendViaApi(phone: string, content: string): Promise<boolean> {
-  if (!isLiveMode()) return false;
+  if (!isWhatsAppLive()) return false;
 
   try {
     const response = await fetch(
@@ -46,15 +42,16 @@ async function sendViaApi(phone: string, content: string): Promise<boolean> {
 }
 
 export async function sendWhatsAppMessage(
+  barberId: number,
   phone: string,
   customerName: string,
   customerId: string | null,
   messageType: MessageType,
   content: string
-): Promise<SendResult> {
+): Promise<SendMessageResult> {
   const db = getDb();
   const messageId = uuid();
-  const live = isLiveMode();
+  const live = isWhatsAppLive();
   let status: "sent" | "simulated" | "failed" = "simulated";
 
   if (live) {
@@ -63,46 +60,77 @@ export async function sendWhatsAppMessage(
   }
 
   db.prepare(
-    `INSERT INTO whatsapp_messages (id, customer_id, customer_name, phone, message_type, content, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(messageId, customerId, customerName, phone, messageType, content, status);
+    `INSERT INTO whatsapp_messages (id, barber_id, customer_id, customer_name, phone, message_type, content, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    messageId,
+    barberId,
+    customerId,
+    customerName,
+    phone,
+    messageType,
+    content,
+    status
+  );
 
   return {
     success: status !== "failed",
     messageId,
     phone,
     content,
+    status,
     mode: live ? "live" : "simulated",
   };
 }
 
 export async function sendRecoveryMessage(
+  barberId: number,
   customerId: string,
   name: string,
   phone: string
-): Promise<SendResult> {
+): Promise<SendMessageResult> {
   const content = WHATSAPP_TEMPLATES.recupero(name);
-  return sendWhatsAppMessage(phone, name, customerId, "recupero", content);
+  return sendWhatsAppMessage(
+    barberId,
+    phone,
+    name,
+    customerId,
+    "recupero",
+    content
+  );
 }
 
 export async function sendReminderMessage(
+  barberId: number,
   customerId: string,
   name: string,
   phone: string,
-  time: string
-): Promise<SendResult> {
-  const content = WHATSAPP_TEMPLATES.promemoria(time);
-  return sendWhatsAppMessage(phone, name, customerId, "promemoria", content);
+  time: string,
+  dateLabel?: string
+): Promise<SendMessageResult> {
+  const content = dateLabel
+    ? WHATSAPP_TEMPLATES.promemoria_domani(time, dateLabel)
+    : WHATSAPP_TEMPLATES.promemoria(time);
+  return sendWhatsAppMessage(
+    barberId,
+    phone,
+    name,
+    customerId,
+    "promemoria",
+    content
+  );
 }
 
 export async function sendSlotMessage(
+  barberId: number,
   phone: string,
   customerName: string,
   customerId: string | null,
   startTime: string
-): Promise<SendResult> {
+): Promise<SendMessageResult> {
   const content = WHATSAPP_TEMPLATES.slot_vuoto(startTime);
   return sendWhatsAppMessage(
+    barberId,
     phone,
     customerName,
     customerId,
@@ -112,31 +140,51 @@ export async function sendSlotMessage(
 }
 
 export async function broadcastRecoveryMessages(
+  barberId: number,
   customers: { id: string; name: string; phone: string }[]
-): Promise<SendResult[]> {
-  const results: SendResult[] = [];
+): Promise<SendMessageResult[]> {
+  const results: SendMessageResult[] = [];
   for (const c of customers) {
-    results.push(await sendRecoveryMessage(c.id, c.name, c.phone));
+    results.push(
+      await sendRecoveryMessage(barberId, c.id, c.name, c.phone)
+    );
   }
   return results;
 }
 
 export async function broadcastSlotToActiveCustomers(
+  barberId: number,
   startTime: string
-): Promise<SendResult[]> {
+): Promise<SendMessageResult[]> {
   const db = getDb();
   const customers = db
     .prepare(
       `SELECT id, name, phone FROM customers 
-       WHERE last_cut_date IS NOT NULL 
+       WHERE barber_id = ? AND last_cut_date IS NOT NULL 
        AND julianday('now') - julianday(last_cut_date) < 60
        ORDER BY last_cut_date DESC LIMIT 20`
     )
-    .all() as { id: string; name: string; phone: string }[];
+    .all(barberId) as { id: string; name: string; phone: string }[];
 
-  const results: SendResult[] = [];
+  const results: SendMessageResult[] = [];
   for (const c of customers) {
-    results.push(await sendSlotMessage(c.phone, c.name, c.id, startTime));
+    results.push(
+      await sendSlotMessage(barberId, c.phone, c.name, c.id, startTime)
+    );
   }
   return results;
+}
+
+export function summarizeSendResults(
+  results: SendMessageResult[]
+): { success: boolean; sent: number; simulated: number; failed: number } {
+  const failed = results.filter((r) => r.status === "failed").length;
+  const sent = results.filter((r) => r.status === "sent").length;
+  const simulated = results.filter((r) => r.status === "simulated").length;
+  return {
+    success: failed === 0,
+    sent,
+    simulated,
+    failed,
+  };
 }

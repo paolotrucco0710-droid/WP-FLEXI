@@ -1,11 +1,39 @@
 import type Database from "better-sqlite3";
 import { v4 as uuid } from "uuid";
 import { format, subDays, addDays } from "date-fns";
+import { hashPassword } from "./auth";
+import { syncEmptySlotsNextDays } from "./slots";
 
-export function seedDatabase(db: Database.Database) {
-  const count = db.prepare("SELECT COUNT(*) as c FROM customers").get() as {
+const DEFAULT_EMAIL = "demo@flexi.local";
+const DEFAULT_PASSWORD = process.env.FLEXI_DEFAULT_PASSWORD || "flexi123";
+const DEMO_BARBER_ID = 1;
+
+export function ensureDefaultBarber(db: Database.Database) {
+  const count = db.prepare("SELECT COUNT(*) as c FROM barbers").get() as {
     c: number;
   };
+  if (count.c > 0) return;
+
+  db.prepare(
+    `INSERT INTO barbers (email, password_hash, name, whatsapp_enabled)
+     VALUES (?, ?, ?, 0)`
+  ).run(DEFAULT_EMAIL, hashPassword(DEFAULT_PASSWORD), "Marco");
+
+  db.prepare(
+    `INSERT OR IGNORE INTO monthly_stats (barber_id) VALUES (?)`
+  ).run(DEMO_BARBER_ID);
+}
+
+export function seedDatabase(db: Database.Database) {
+  const shouldSeed =
+    process.env.FLEXI_SEED_DEMO === "1" ||
+    process.env.NODE_ENV === "development";
+
+  if (!shouldSeed) return;
+
+  const count = db
+    .prepare("SELECT COUNT(*) as c FROM customers WHERE barber_id = ?")
+    .get(DEMO_BARBER_ID) as { c: number };
   if (count.c > 0) return;
 
   const today = new Date();
@@ -31,8 +59,8 @@ export function seedDatabase(db: Database.Database) {
   ];
 
   const insertCustomer = db.prepare(`
-    INSERT INTO customers (id, name, phone, last_cut_date, total_cuts, notes, avatar_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO customers (id, barber_id, name, phone, last_cut_date, total_cuts, notes, avatar_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const customerIds: string[] = [];
@@ -41,6 +69,7 @@ export function seedDatabase(db: Database.Database) {
     customerIds.push(id);
     insertCustomer.run(
       id,
+      DEMO_BARBER_ID,
       c.name,
       c.phone,
       format(subDays(today, c.daysAgo), "yyyy-MM-dd"),
@@ -51,8 +80,8 @@ export function seedDatabase(db: Database.Database) {
   }
 
   const insertAppt = db.prepare(`
-    INSERT INTO appointments (id, customer_id, customer_name, date, time, duration_minutes, status, notes)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO appointments (id, barber_id, customer_id, customer_name, date, time, duration_minutes, status, notes)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const todayAppointments = [
@@ -66,6 +95,7 @@ export function seedDatabase(db: Database.Database) {
   for (const a of todayAppointments) {
     insertAppt.run(
       uuid(),
+      DEMO_BARBER_ID,
       customerIds[a.idx],
       customers[a.idx].name,
       todayStr,
@@ -76,25 +106,22 @@ export function seedDatabase(db: Database.Database) {
     );
   }
 
-  insertAppt.run(uuid(), customerIds[3], customers[3].name, tomorrowStr, "11:30", 45, "confermato", null);
-  insertAppt.run(uuid(), customerIds[4], customers[4].name, tomorrowStr, "15:00", 45, "non_confermato", null);
-
-  const insertSlot = db.prepare(`
-    INSERT INTO empty_slots (id, date, start_time, end_time, duration_minutes, published)
-    VALUES (?, ?, ?, ?, ?, 0)
-  `);
-  insertSlot.run(uuid(), todayStr, "18:00", "18:45", 45);
-  insertSlot.run(uuid(), todayStr, "19:00", "19:45", 45);
+  insertAppt.run(uuid(), DEMO_BARBER_ID, customerIds[3], customers[3].name, tomorrowStr, "11:30", 45, "confermato", null);
+  insertAppt.run(uuid(), DEMO_BARBER_ID, customerIds[4], customers[4].name, tomorrowStr, "15:00", 45, "non_confermato", null);
 
   const insertRequest = db.prepare(`
-    INSERT INTO appointment_requests (id, customer_id, customer_name, customer_phone, requested_date, requested_time, status)
-    VALUES (?, ?, ?, ?, ?, ?, 'da_gestire')
+    INSERT INTO appointment_requests (id, barber_id, customer_id, customer_name, customer_phone, requested_date, requested_time, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'da_gestire')
   `);
-  insertRequest.run(uuid(), customerIds[5], customers[5].name, customers[5].phone, tomorrowStr, "11:30");
-  insertRequest.run(uuid(), customerIds[6], customers[6].name, customers[6].phone, tomorrowStr, "16:00");
-  insertRequest.run(uuid(), customerIds[7], customers[7].name, customers[7].phone, format(addDays(today, 2), "yyyy-MM-dd"), "10:30");
+  insertRequest.run(uuid(), DEMO_BARBER_ID, customerIds[5], customers[5].name, customers[5].phone, tomorrowStr, "11:30");
+  insertRequest.run(uuid(), DEMO_BARBER_ID, customerIds[6], customers[6].name, customers[6].phone, tomorrowStr, "16:00");
+  insertRequest.run(uuid(), DEMO_BARBER_ID, customerIds[7], customers[7].name, customers[7].phone, format(addDays(today, 2), "yyyy-MM-dd"), "10:30");
 
-  db.prepare(`
-    UPDATE monthly_stats SET recovered_customers = 7, no_shows_avoided = 4, slots_filled = 5 WHERE id = 1
-  `).run();
+  db.prepare(
+    `UPDATE monthly_stats SET recovered_customers = 7, no_shows_avoided = 4, slots_filled = 5 WHERE barber_id = ?`
+  ).run(DEMO_BARBER_ID);
+
+  syncEmptySlotsNextDays(DEMO_BARBER_ID, 7);
 }
+
+export { DEFAULT_EMAIL, DEFAULT_PASSWORD };

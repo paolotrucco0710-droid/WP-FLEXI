@@ -7,6 +7,8 @@ export const WHATSAPP_TEMPLATES = {
     `Ciao ${nome}! 👋 È un po' che non passi in negozio. Questa settimana ho 2 slot liberi, se vuoi ti tengo un posto 👍`,
   promemoria: (orario: string) =>
     `Ciao! 📅 Confermi il tuo appuntamento di oggi alle ${orario}? Rispondi SI`,
+  promemoria_domani: (orario: string, data: string) =>
+    `Ciao! 📅 Confermi il tuo appuntamento di ${data} alle ${orario}? Rispondi SI`,
   slot_vuoto: (orario: string) =>
     `Ciao! Oggi si è liberato uno slot alle ${orario}. Se vuoi un taglio veloce, rispondi a questo messaggio!`,
   richiesta_accettata: (nome: string, data: string, orario: string) =>
