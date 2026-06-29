@@ -5,6 +5,6 @@ import { getDashboardStats } from "@/lib/rules";
 export async function GET() {
   const auth = await requireApiAuth();
   if (auth.error) return auth.error;
-  const stats = getDashboardStats(auth.barberId);
+  const stats = await getDashboardStats(auth.barberId);
   return NextResponse.json(stats);
 }

@@ -30,7 +30,11 @@ export default function LoginForm() {
       }
 
       const from = searchParams.get("from") || "/";
-      router.push(from);
+      if (data.barber && data.barber.onboardingCompleted === false) {
+        router.push("/onboarding");
+      } else {
+        router.push(from);
+      }
       router.refresh();
     } catch {
       setError("Errore di connessione");
@@ -86,7 +90,13 @@ export default function LoginForm() {
           </button>
         </form>
 
-        <p className="mt-4 text-center text-xs text-flexi-gray">
+        <p className="mt-4 text-center text-sm text-flexi-gray">
+          Nuovo barbiere?{" "}
+          <a href="/signup" className="font-semibold text-flexi-purple">
+            Registrati
+          </a>
+        </p>
+        <p className="mt-2 text-center text-xs text-flexi-gray">
           Demo: demo@flexi.local / flexi123
         </p>
       </div>

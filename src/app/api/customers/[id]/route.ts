@@ -10,10 +10,10 @@ export async function GET(
   if (auth.error) return auth.error;
 
   const { id } = await params;
-  const customer = getCustomerById(auth.barberId, id);
+  const customer = await getCustomerById(auth.barberId, id);
   if (!customer) {
-    return NextResponse.json({ error: "Non trovato" }, { status: 404 });
+    return NextResponse.json({ success: false, error: "Non trovato", code: "NOT_FOUND" }, { status: 404 });
   }
-  const appointments = getCustomerAppointments(auth.barberId, id);
+  const appointments = await getCustomerAppointments(auth.barberId, id);
   return NextResponse.json({ customer, appointments });
 }

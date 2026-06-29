@@ -80,7 +80,7 @@ export interface WhatsAppMessage {
   phone: string;
   message_type: MessageType;
   content: string;
-  status: "sent" | "simulated" | "failed";
+  status: "sent" | "simulated" | "failed" | "queued";
   created_at: string;
 }
 
@@ -114,6 +114,6 @@ export interface SendMessageResult {
   messageId: string;
   phone: string;
   content: string;
-  status: "sent" | "simulated" | "failed";
+  status: "sent" | "simulated" | "failed" | "queued";
   mode: "simulated" | "live";
 }

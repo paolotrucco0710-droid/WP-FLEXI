@@ -1,11 +1,14 @@
 import { v4 as uuid } from "uuid";
 import { getDb } from "./db";
 import { normalizePhone } from "./phone";
+import { computeSlotsForDates } from "./slots";
+import { logger } from "./logger";
 
 export interface WebhookMessage {
   from: string;
   body: string;
   barberId?: number;
+  messageId?: string;
 }
 
 export interface WebhookResult {
@@ -23,10 +26,10 @@ function parseYesNo(body: string): "SI" | "NO" | null {
   return null;
 }
 
-export function handleInboundWhatsApp(
+export async function handleInboundWhatsApp(
   message: WebhookMessage
-): WebhookResult {
-  const db = getDb();
+): Promise<WebhookResult> {
+  const db = await getDb();
   const phone = normalizePhone(message.from);
   const response = parseYesNo(message.body);
 
@@ -34,29 +37,34 @@ export function handleInboundWhatsApp(
     return { ok: false, error: "Messaggio non riconosciuto (usa SI o NO)" };
   }
 
+  const idempotencyKey =
+    message.messageId ?? `inbound-${phone}-${message.body}-${Date.now()}`;
+
+  const existing = await db.get<{ id: string }>(
+    `SELECT id FROM inbound_messages WHERE idempotency_key = ?`,
+    [idempotencyKey]
+  );
+  if (existing) {
+    return { ok: true, action: "duplicate_ignored" };
+  }
+
   let barberId = message.barberId;
-  let customer: {
-    id: string;
-    barber_id: number;
-    name: string;
-  } | undefined;
+  let customer: { id: string; barber_id: number; name: string } | undefined;
 
   if (barberId) {
-    customer = db
-      .prepare(
-        `SELECT id, barber_id, name FROM customers 
-         WHERE barber_id = ? AND REPLACE(REPLACE(REPLACE(phone, ' ', ''), '+', ''), '-', '') LIKE ?
-         LIMIT 1`
-      )
-      .get(barberId, `%${phone.slice(-10)}`) as typeof customer;
+    customer = await db.get(
+      `SELECT id, barber_id, name FROM customers 
+       WHERE barber_id = ? AND REPLACE(REPLACE(REPLACE(phone, ' ', ''), '+', ''), '-', '') LIKE ?
+       LIMIT 1`,
+      [barberId, `%${phone.slice(-10)}`]
+    );
   } else {
-    customer = db
-      .prepare(
-        `SELECT id, barber_id, name FROM customers 
-         WHERE REPLACE(REPLACE(REPLACE(phone, ' ', ''), '+', ''), '-', '') LIKE ?
-         LIMIT 1`
-      )
-      .get(`%${phone.slice(-10)}`) as typeof customer;
+    customer = await db.get(
+      `SELECT id, barber_id, name FROM customers 
+       WHERE REPLACE(REPLACE(REPLACE(phone, ' ', ''), '+', ''), '-', '') LIKE ?
+       LIMIT 1`,
+      [`%${phone.slice(-10)}`]
+    );
     barberId = customer?.barber_id;
   }
 
@@ -65,41 +73,44 @@ export function handleInboundWhatsApp(
   }
 
   const inboundId = uuid();
-  db.prepare(
-    `INSERT INTO inbound_messages (id, barber_id, customer_id, phone, body, action_taken)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(
-    inboundId,
-    barberId,
-    customer.id,
-    message.from,
-    message.body,
-    response
+  await db.run(
+    `INSERT INTO inbound_messages (id, barber_id, customer_id, phone, body, action_taken, idempotency_key)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      inboundId,
+      barberId,
+      customer.id,
+      message.from,
+      message.body,
+      response,
+      idempotencyKey,
+    ]
   );
 
-  const pendingAppt = db
-    .prepare(
-      `SELECT * FROM appointments 
-       WHERE barber_id = ? AND customer_id = ? 
-       AND status IN ('non_confermato', 'rischio_no_show')
-       AND date >= date('now')
-       ORDER BY date ASC, time ASC
-       LIMIT 1`
-    )
-    .get(barberId, customer.id) as
-    | { id: string; date: string; time: string }
-    | undefined;
+  const dialect = db.dialect;
+  const dateCmp =
+    dialect === "postgres" ? `date >= CURRENT_DATE` : `date >= date('now')`;
+
+  const pendingAppt = await db.get<{ id: string; date: string; time: string }>(
+    `SELECT id, date, time FROM appointments 
+     WHERE barber_id = ? AND customer_id = ? 
+     AND status IN ('non_confermato', 'rischio_no_show')
+     AND ${dateCmp}
+     ORDER BY date ASC, time ASC LIMIT 1`,
+    [barberId, customer.id]
+  );
 
   if (response === "SI") {
     if (pendingAppt) {
-      db.prepare(
-        `UPDATE appointments SET status = 'confermato' WHERE id = ? AND barber_id = ?`
-      ).run(pendingAppt.id, barberId);
-
-      db.prepare(
-        `UPDATE monthly_stats SET no_shows_avoided = no_shows_avoided + 1 WHERE barber_id = ?`
-      ).run(barberId);
-
+      await db.run(
+        `UPDATE appointments SET status = 'confermato' WHERE id = ? AND barber_id = ?`,
+        [pendingAppt.id, barberId]
+      );
+      await db.run(
+        `UPDATE monthly_stats SET no_shows_avoided = no_shows_avoided + 1 WHERE barber_id = ?`,
+        [barberId]
+      );
+      logger.info("webhook_confirmed", { barberId, appointmentId: pendingAppt.id });
       return {
         ok: true,
         action: "appointment_confirmed",
@@ -108,33 +119,35 @@ export function handleInboundWhatsApp(
       };
     }
 
-    const slot = db
-      .prepare(
-        `SELECT * FROM empty_slots 
-         WHERE barber_id = ? AND published = 0 AND date >= date('now')
-         ORDER BY date, start_time LIMIT 1`
-      )
-      .get(barberId) as
-      | { id: string; date: string; start_time: string; duration_minutes: number }
-      | undefined;
+    const today = new Date().toISOString().slice(0, 10);
+    const slots = await computeSlotsForDates(barberId, [today]);
+    const slot = slots[0];
 
     if (slot) {
       const apptId = uuid();
-      db.prepare(
+      await db.run(
         `INSERT INTO appointments (id, barber_id, customer_id, customer_name, date, time, duration_minutes, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'confermato')`
-      ).run(
-        apptId,
-        barberId,
-        customer.id,
-        customer.name,
-        slot.date,
-        slot.start_time,
-        slot.duration_minutes
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'confermato')`,
+        [
+          apptId,
+          barberId,
+          customer.id,
+          customer.name,
+          slot.date,
+          slot.start_time,
+          slot.duration_minutes,
+        ]
       );
-      db.prepare(
-        `UPDATE empty_slots SET published = 1 WHERE id = ?`
-      ).run(slot.id);
+      await db.run(
+        `INSERT INTO published_slots (barber_id, slot_date, start_time) VALUES (?, ?, ?)
+         ON CONFLICT DO NOTHING`,
+        [barberId, slot.date, slot.start_time]
+      ).catch(() =>
+        db.run(
+          `INSERT OR IGNORE INTO published_slots (barber_id, slot_date, start_time) VALUES (?, ?, ?)`,
+          [barberId, slot.date, slot.start_time]
+        )
+      );
 
       return {
         ok: true,
@@ -148,9 +161,10 @@ export function handleInboundWhatsApp(
   }
 
   if (pendingAppt) {
-    db.prepare(
-      `UPDATE appointments SET status = 'cancellato' WHERE id = ? AND barber_id = ?`
-    ).run(pendingAppt.id, barberId);
+    await db.run(
+      `UPDATE appointments SET status = 'cancellato' WHERE id = ? AND barber_id = ?`,
+      [pendingAppt.id, barberId]
+    );
     return {
       ok: true,
       action: "appointment_rejected",
@@ -162,11 +176,8 @@ export function handleInboundWhatsApp(
   return { ok: true, action: "no_pending_appointment", customerId: customer.id };
 }
 
-export function parseMetaWebhookPayload(
-  body: unknown
-): WebhookMessage | null {
+export function parseMetaWebhookPayload(body: unknown): WebhookMessage | null {
   if (!body || typeof body !== "object") return null;
-
   const b = body as Record<string, unknown>;
 
   if (b.from && b.body) {
@@ -174,6 +185,7 @@ export function parseMetaWebhookPayload(
       from: String(b.from),
       body: String(b.body),
       barberId: b.barberId ? Number(b.barberId) : undefined,
+      messageId: b.messageId ? String(b.messageId) : undefined,
     };
   }
 
@@ -188,6 +200,7 @@ export function parseMetaWebhookPayload(
     return {
       from: String(msg.from),
       body: String(text.body ?? ""),
+      messageId: msg.id ? String(msg.id) : undefined,
     };
   }
 

@@ -13,6 +13,7 @@ export interface SessionPayload {
   barberId: number;
   email: string;
   name: string;
+  onboardingCompleted?: boolean;
 }
 
 export async function createSessionToken(

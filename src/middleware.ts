@@ -5,7 +5,9 @@ import { COOKIE_NAME } from "@/lib/session";
 
 const PUBLIC_PATHS = [
   "/login",
+  "/signup",
   "/api/auth/login",
+  "/api/auth/signup",
   "/api/webhook/whatsapp",
 ];
 
@@ -15,14 +17,20 @@ function getSecret() {
   );
 }
 
-async function isAuthenticated(request: NextRequest): Promise<boolean> {
+async function getSession(
+  request: NextRequest
+): Promise<{ barberId: number; onboardingCompleted?: boolean } | null> {
   const token = request.cookies.get(COOKIE_NAME)?.value;
-  if (!token) return false;
+  if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, getSecret());
-    return typeof payload.barberId === "number" && payload.barberId > 0;
+    if (typeof payload.barberId !== "number" || payload.barberId <= 0) return null;
+    return {
+      barberId: payload.barberId as number,
+      onboardingCompleted: !!payload.onboardingCompleted,
+    };
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -50,8 +58,8 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const authed = await isAuthenticated(request);
-  if (!authed) {
+  const session = await getSession(request);
+  if (!session) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json(
         { error: "Non autenticato", code: "AUTH_REQUIRED" },
@@ -61,6 +69,15 @@ export async function middleware(request: NextRequest) {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("from", pathname);
     return NextResponse.redirect(loginUrl);
+  }
+
+  if (
+    !session.onboardingCompleted &&
+    !pathname.startsWith("/onboarding") &&
+    !pathname.startsWith("/api/onboarding") &&
+    !pathname.startsWith("/api/auth/logout")
+  ) {
+    return NextResponse.redirect(new URL("/onboarding", request.url));
   }
 
   return NextResponse.next();

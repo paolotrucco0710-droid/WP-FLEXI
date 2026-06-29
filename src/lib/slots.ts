@@ -1,10 +1,9 @@
-import { v4 as uuid } from "uuid";
-import { addMinutes, format, parse } from "date-fns";
+import { format, addDays } from "date-fns";
 import { getDb } from "./db";
 import type { Appointment, EmptySlot } from "./types";
 
-const WORK_START = "09:00";
-const WORK_END = "19:00";
+const WORK_START = 9 * 60;
+const WORK_END = 19 * 60;
 const DEFAULT_SLOT_MINUTES = 45;
 
 function timeToMinutes(time: string): number {
@@ -18,9 +17,16 @@ function minutesToTime(minutes: number): string {
   return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}`;
 }
 
-function getOccupiedRanges(
-  appointments: Appointment[]
-): { start: number; end: number }[] {
+export function slotToId(date: string, startTime: string): string {
+  return `${date}_${startTime}`;
+}
+
+export function parseSlotId(id: string): { date: string; startTime: string } {
+  const [date, startTime] = id.split("_");
+  return { date, startTime };
+}
+
+function getOccupiedRanges(appointments: Appointment[]) {
   return appointments
     .filter((a) => a.status !== "cancellato")
     .map((a) => {
@@ -34,100 +40,100 @@ export function computeEmptySlotsForDay(
   barberId: number,
   date: string,
   appointments: Appointment[],
+  publishedKeys: Set<string>,
   slotMinutes: number = DEFAULT_SLOT_MINUTES
-): Omit<EmptySlot, "id" | "created_at" | "published">[] {
-  const dayStart = timeToMinutes(WORK_START);
-  const dayEnd = timeToMinutes(WORK_END);
+): EmptySlot[] {
   const occupied = getOccupiedRanges(appointments);
-  const gaps: Omit<EmptySlot, "id" | "created_at" | "published">[] = [];
+  const slots: EmptySlot[] = [];
+  let cursor = WORK_START;
 
-  let cursor = dayStart;
-  while (cursor + slotMinutes <= dayEnd) {
+  while (cursor + slotMinutes <= WORK_END) {
     const gapEnd = cursor + slotMinutes;
-    const overlaps = occupied.some(
-      (o) => cursor < o.end && gapEnd > o.start
-    );
+    const overlaps = occupied.some((o) => cursor < o.end && gapEnd > o.start);
 
     if (!overlaps) {
-      gaps.push({
-        barber_id: barberId,
-        date,
-        start_time: minutesToTime(cursor),
-        end_time: minutesToTime(gapEnd),
-        duration_minutes: slotMinutes,
-      });
+      const start_time = minutesToTime(cursor);
+      const end_time = minutesToTime(gapEnd);
+      const key = slotToId(date, start_time);
+      if (!publishedKeys.has(key)) {
+        slots.push({
+          id: key,
+          barber_id: barberId,
+          date,
+          start_time,
+          end_time,
+          duration_minutes: slotMinutes,
+          published: 0,
+          created_at: new Date().toISOString(),
+        });
+      }
     }
-
     cursor += slotMinutes;
   }
 
-  return gaps;
+  return slots;
 }
 
-export function syncEmptySlotsForBarber(
+export async function getPublishedSlotKeys(
+  barberId: number,
+  fromDate: string
+): Promise<Set<string>> {
+  const db = await getDb();
+  const rows = await db.all<{ slot_date: string; start_time: string }>(
+    `SELECT slot_date, start_time FROM published_slots 
+     WHERE barber_id = ? AND slot_date >= ?`,
+    [barberId, fromDate]
+  );
+  return new Set(rows.map((r) => slotToId(String(r.slot_date).slice(0, 10), r.start_time)));
+}
+
+export async function computeSlotsForDates(
   barberId: number,
   dates: string[]
-): number {
-  const db = getDb();
-  let synced = 0;
+): Promise<EmptySlot[]> {
+  const db = await getDb();
+  const published = await getPublishedSlotKeys(barberId, dates[0] ?? format(new Date(), "yyyy-MM-dd"));
+  const all: EmptySlot[] = [];
 
   for (const date of dates) {
-    const appointments = db
-      .prepare(
-        `SELECT * FROM appointments WHERE barber_id = ? AND date = ?`
-      )
-      .all(barberId, date) as Appointment[];
-
-    const computed = computeEmptySlotsForDay(barberId, date, appointments);
-    const existing = db
-      .prepare(
-        `SELECT * FROM empty_slots WHERE barber_id = ? AND date = ? AND published = 0`
-      )
-      .all(barberId, date) as EmptySlot[];
-
-    const computedKeys = new Set(
-      computed.map((s) => `${s.start_time}-${s.end_time}`)
+    const appointments = await db.all<Appointment>(
+      `SELECT * FROM appointments WHERE barber_id = ? AND date = ?`,
+      [barberId, date]
     );
-
-    for (const slot of existing) {
-      const key = `${slot.start_time}-${slot.end_time}`;
-      if (!computedKeys.has(key)) {
-        db.prepare("DELETE FROM empty_slots WHERE id = ?").run(slot.id);
-      }
-    }
-
-    for (const slot of computed) {
-      const found = existing.find(
-        (e) =>
-          e.start_time === slot.start_time && e.end_time === slot.end_time
-      );
-      if (!found) {
-        db.prepare(
-          `INSERT INTO empty_slots (id, barber_id, date, start_time, end_time, duration_minutes, published)
-           VALUES (?, ?, ?, ?, ?, ?, 0)`
-        ).run(
-          uuid(),
-          barberId,
-          slot.date,
-          slot.start_time,
-          slot.end_time,
-          slot.duration_minutes
-        );
-        synced++;
-      }
-    }
+    all.push(...computeEmptySlotsForDay(barberId, date, appointments, published));
   }
 
-  return synced;
+  return all;
 }
 
-export function syncEmptySlotsNextDays(barberId: number, days = 7): number {
+export async function computeSlotsNextDays(
+  barberId: number,
+  days = 7
+): Promise<EmptySlot[]> {
   const dates: string[] = [];
   const today = new Date();
   for (let i = 0; i < days; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() + i);
-    dates.push(format(d, "yyyy-MM-dd"));
+    dates.push(format(addDays(today, i), "yyyy-MM-dd"));
   }
-  return syncEmptySlotsForBarber(barberId, dates);
+  return computeSlotsForDates(barberId, dates);
+}
+
+export async function markSlotPublished(
+  barberId: number,
+  date: string,
+  startTime: string
+): Promise<void> {
+  const db = await getDb();
+  await db
+    .run(
+      `INSERT INTO published_slots (barber_id, slot_date, start_time) VALUES (?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+      [barberId, date, startTime]
+    )
+    .catch(() =>
+      db.run(
+        `INSERT OR IGNORE INTO published_slots (barber_id, slot_date, start_time) VALUES (?, ?, ?)`,
+        [barberId, date, startTime]
+      )
+    );
 }

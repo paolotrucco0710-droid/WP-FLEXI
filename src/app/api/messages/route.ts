@@ -5,6 +5,6 @@ import { getRecentMessages } from "@/lib/rules";
 export async function GET() {
   const auth = await requireApiAuth();
   if (auth.error) return auth.error;
-  const messages = getRecentMessages(auth.barberId);
+  const messages = await getRecentMessages(auth.barberId);
   return NextResponse.json(messages);
 }

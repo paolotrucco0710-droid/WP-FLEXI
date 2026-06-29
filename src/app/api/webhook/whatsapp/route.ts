@@ -32,7 +32,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const result = handleInboundWhatsApp(message);
+    const result = await handleInboundWhatsApp(message);
 
     return NextResponse.json(result, { status: result.ok ? 200 : 422 });
   } catch (e) {

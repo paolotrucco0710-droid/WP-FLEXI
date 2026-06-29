@@ -9,7 +9,7 @@ export default async function HomePage() {
   const session = await getServerSession();
   if (!session?.barberId) redirect("/login");
 
-  const stats = getDashboardStats(session.barberId);
+  const stats = await getDashboardStats(session.barberId);
 
   return (
     <AppShell>
