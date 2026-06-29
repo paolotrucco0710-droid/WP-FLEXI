@@ -34,6 +34,7 @@ export async function verifySessionToken(
       barberId: payload.barberId as number,
       email: payload.email as string,
       name: payload.name as string,
+      onboardingCompleted: !!payload.onboardingCompleted,
     };
   } catch {
     return null;

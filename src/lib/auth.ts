@@ -12,11 +12,53 @@ import {
 
 const SESSION_DAYS = 30;
 
+/** Database is the source of truth for onboarding_completed. */
+export async function syncSessionFromDb(
+  session: SessionPayload
+): Promise<SessionPayload> {
+  const db = await getDb();
+  const barber = await db.get<{
+    name: string;
+    email: string;
+    onboarding_completed: boolean | number;
+  }>(
+    "SELECT name, email, onboarding_completed FROM barbers WHERE id = ?",
+    [session.barberId]
+  );
+  if (!barber) return session;
+
+  return {
+    barberId: session.barberId,
+    email: barber.email,
+    name: barber.name,
+    onboardingCompleted: !!barber.onboarding_completed,
+  };
+}
+
+function sessionNeedsRefresh(
+  cached: SessionPayload,
+  synced: SessionPayload
+): boolean {
+  return (
+    cached.onboardingCompleted !== synced.onboardingCompleted ||
+    cached.name !== synced.name ||
+    cached.email !== synced.email
+  );
+}
+
 export async function getServerSession(): Promise<SessionPayload | null> {
   const cookieStore = await cookies();
   const token = cookieStore.get(COOKIE_NAME)?.value;
   if (!token) return null;
-  return verifySessionToken(token);
+
+  const session = await verifySessionToken(token);
+  if (!session?.barberId) return null;
+
+  const synced = await syncSessionFromDb(session);
+  if (sessionNeedsRefresh(session, synced)) {
+    await refreshSession(synced);
+  }
+  return synced;
 }
 
 export async function refreshSession(
@@ -117,7 +159,18 @@ export async function requireApiAuth(): Promise<
   | { barberId: number; session: SessionPayload; error?: never }
   | { error: NextResponse; barberId?: never; session?: never }
 > {
-  const session = await getServerSession();
+  const cookieStore = await cookies();
+  const token = cookieStore.get(COOKIE_NAME)?.value;
+  if (!token) {
+    return {
+      error: NextResponse.json(
+        { success: false, error: "Non autenticato", code: "AUTH_REQUIRED" },
+        { status: 401 }
+      ),
+    };
+  }
+
+  const session = await verifySessionToken(token);
   if (!session?.barberId) {
     return {
       error: NextResponse.json(
@@ -126,8 +179,11 @@ export async function requireApiAuth(): Promise<
       ),
     };
   }
-  await refreshSession(session);
-  return { barberId: session.barberId, session };
+
+  const synced = await syncSessionFromDb(session);
+  await refreshSession(synced);
+
+  return { barberId: synced.barberId, session: synced };
 }
 
 export { COOKIE_NAME, createSessionToken, sessionCookieHeader };

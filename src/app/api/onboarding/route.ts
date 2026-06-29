@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { requireApiAuth } from "@/lib/auth";
+import {
+  createSessionToken,
+  requireApiAuth,
+  sessionCookieHeader,
+  syncSessionFromDb,
+} from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { testWhatsAppConnection } from "@/lib/whatsapp";
 import { importCustomersFromCsv } from "@/lib/actions";
@@ -89,7 +94,11 @@ export async function POST(request: Request) {
       [1, auth.barberId]
     );
 
-    return apiSuccess({ step: 4, imported, completed: true });
+    const updatedSession = await syncSessionFromDb(auth.session);
+    const token = await createSessionToken(updatedSession);
+    const response = apiSuccess({ step: 4, imported, completed: true });
+    response.headers.set("Set-Cookie", sessionCookieHeader(token));
+    return response;
   }
 
   return apiError("Step non valido", "INVALID_STEP");

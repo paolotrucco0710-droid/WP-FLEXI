@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "saas-check": "tsx scripts/saas-check.ts",
+    "onboarding-check": "tsx scripts/onboarding-flow-check.ts",
     "db:migrate": "tsx scripts/migrate-sqlite-to-postgres.ts"
   },
   "dependencies": {
